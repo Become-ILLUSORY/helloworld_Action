@@ -1,0 +1,122 @@
+name: Build helloworld .ipk for ImmortalWrt 24.10 (aarch64_cortex-a53)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    # 增加超时时间，避免编译超时
+    timeout-minutes: 120
+
+    steps:
+      - name: 清理磁盘空间（解决Runner空间不足）
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Checkout helloworld
+        uses: actions/checkout@v4
+        with:
+          repository: fw876/helloworld
+          path: helloworld
+          # 拉取完整历史，避免编译时依赖缺失
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          sudo apt update && sudo apt upgrade -y
+          sudo apt install -y gcc g++ binutils bzip2 flex python3 perl make unzip \
+          libncurses5-dev zlib1g-dev gawk subversion git gettext libssl-dev xsltproc \
+          rsync wget zstd  # 新增zstd工具，用于解压.zst格式SDK
+          # 清理apt缓存，释放空间
+          sudo apt autoremove -y && sudo apt clean
+
+      - name: Download ImmortalWrt SDK (24.10, armsr/armv8)
+        run: |
+          # 定义SDK文件名，避免重复书写
+          SDK_FILE="immortalwrt-sdk-24.10.0-armsr-armv8_gcc-13.3.0_musl.Linux-x86_64.tar.zst"
+          # 下载SDK，指定-O确保文件名正确
+          wget "https://immortalwrt.kyarucloud.moe/releases/24.10.0/targets/armsr/armv8/$SDK_FILE" -O "$SDK_FILE"
+          
+          # 解压.zst格式的SDK（关键修复：-I zstd指定解压工具）
+          tar -I zstd -xf "$SDK_FILE"
+          
+          # 移动解压后的目录到sdk，通配符确保匹配完整目录名
+          mv immortalwrt-sdk-24.10.0-armsr-armv8_* sdk
+          
+          # 验证SDK解压是否成功，失败则终止流程
+          if [ ! -d "sdk" ]; then
+            echo "ERROR: SDK解压失败，未找到sdk目录"
+            exit 1
+          fi
+          echo "SDK下载并解压成功"
+
+      - name: Add helloworld as local feed
+        run: |
+          cd sdk
+          # 写入本地feed配置，绝对路径避免相对路径问题
+          echo "src-link helloworld $(realpath ../helloworld)" >> feeds.conf.default
+          # 更新feed并安装所有helloworld包
+          ./scripts/feeds update helloworld
+          ./scripts/feeds install -a -p helloworld
+
+      - name: Build all helloworld packages
+        run: |
+          cd sdk
+          # 配置编译参数，适配aarch64架构
+          make defconfig
+          # 编译helloworld下所有包，并行编译加速，忽略非关键错误
+          make package/helloworld/compile V=s -j$(nproc) IGNORE_ERRORS=1
+          # 验证编译产物是否存在
+          if [ -z "$(find bin/packages -name '*.ipk' -not -name 'Packages*')" ]; then
+            echo "ERROR: 未生成任何.ipk文件"
+            exit 1
+          fi
+
+      - name: Collect .ipk files
+        run: |
+          mkdir -p release
+          # 递归查找所有ipk文件，排除Packages索引文件
+          find sdk/bin/packages -name "*.ipk" -not -name "Packages*" -exec cp {} release/ \;
+          # 输出找到的ipk数量，方便调试
+          IPK_COUNT=$(ls -1 release/*.ipk 2>/dev/null | wc -l)
+          echo "成功编译并收集到 $IPK_COUNT 个.ipk文件"
+          # 列出所有ipk文件，便于排查
+          ls -lh release/
+
+      - name: Create ZIP archive
+        run: |
+          cd release
+          # 生成带日期的压缩包名，便于版本追溯
+          ZIP_NAME="helloworld-aarch64_cortex-a53-immortalwrt-24.10-$(date +%Y%m%d).zip"
+          zip -r "$ZIP_NAME" *.ipk
+          # 把压缩包路径写入环境变量，方便后续发布
+          echo "ZIP_FILE=$(realpath $ZIP_NAME)" >> $GITHUB_ENV
+
+      - name: Release to GitHub
+        uses: softprops/action-gh-release@v2
+        if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+        with:
+          files: ${{ env.ZIP_FILE }}
+          # 生成唯一的tag，避免重复发布报错
+          tag_name: v24.10-aarch64-$(date +%Y%m%d-%H%M%S)
+          name: helloworld .ipk for ImmortalWrt 24.10 (aarch64_cortex-a53)
+          body: |
+            Built using ImmortalWrt 24.10 SDK (armsr/armv8)
+            Architecture: aarch64_cortex-a53
+            Source: https://github.com/fw876/helloworld
+            Build Time: $(date +%Y-%m-%d\ %H:%M:%S)
+            Compiled IPK Count: ${{ env.IPK_COUNT }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
