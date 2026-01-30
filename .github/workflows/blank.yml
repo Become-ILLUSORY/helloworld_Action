@@ -41,14 +41,22 @@ jobs:
         run: |
           SDK_FILE="immortalwrt-sdk-24.10.0-armsr-armv8_gcc-13.3.0_musl.Linux-x86_64.tar.zst"
           wget "https://immortalwrt.kyarucloud.moe/releases/24.10.0/targets/armsr/armv8/$SDK_FILE" -O "$SDK_FILE"
+          
+          # 解压并调试
           tar -I zstd -xf "$SDK_FILE"
-          SDK_DIR=$(ls -d immortalwrt-sdk-*)
-          if [ -z "$SDK_DIR" ]; then
-            echo "ERROR: 未找到解压后的 SDK 目录"
+          ls -la  # 确认解压结果
+          
+          # 精确匹配目录名
+          SDK_DIR=$(find . -maxdepth 1 -type d -name "immortalwrt-sdk-*" | head -n1 | sed 's|./||')
+          echo "解压后的目录名: $SDK_DIR"
+          
+          if [ -z "$SDK_DIR" ] || [ ! -d "$SDK_DIR" ]; then
+            echo "ERROR: 未找到有效的 SDK 目录"
             exit 1
           fi
+          
           mv "$SDK_DIR" sdk
-          echo "SDK ready"
+          echo "SDK 准备就绪"
 
 
       - name: Add helloworld as local feed
