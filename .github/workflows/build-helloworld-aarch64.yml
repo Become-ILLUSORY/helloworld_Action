@@ -20,26 +20,14 @@ on:
 env:
   REPO_URL: https://github.com/fw876/helloworld.git
   ARCH: aarch64_cortex-a53
-  TARGET: mvebu-cortexa53
   FEEDNAME: helloworld
 
 jobs:
   build:
-    name: Build aarch64_cortex-a53
-    runs-on: ubuntu-latest
+    name: Build ${{ env.ARCH }}
+    runs-on: ubuntu-24.04
 
     steps:
-      - name: Free Disk Space
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: true
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: true
-
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -65,16 +53,18 @@ jobs:
           echo "Detected packages: $PACKAGES"
           echo "PACKAGES=$PACKAGES" >> $GITHUB_ENV
 
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/lib/{jvm,llvm} /usr/local /usr/src/* /var/lib/gems /var/lib/mysql /var/lib/snapd /etc/skel /opt/{microsoft,az,hostedtoolcache,cni,mssql-tools,pipx} /usr/share/{az*,dotnet,swift,miniconda,gradle*,java,kotlinc,ri,sbt} /root/{.sbt,.local,.npm} /usr/libexec/gcc/x86_64-linux-gnu/14 /usr/lib/x86_64-linux-gnu/{*clang*,*LLVM*} /home/linuxbrew
+
       - name: Build packages
         uses: immortalwrt/gh-action-sdk@v7
         env:
-          ARCH: ${{ env.ARCH }}
+          ARCH: ${{ env.ARCH }}-openwrt-24.10
           FEEDNAME: ${{ env.FEEDNAME }}
-          V: s
-          target: ${{ env.TARGET }}
-          packages: ${{ env.PACKAGES }}
-        with:
-          entrypoint: /entrypoint.sh
+          PACKAGES: ${{ env.PACKAGES }}
+          NO_REFRESH_CHECK: true
+          IGNORE_ERRORS: true
 
       - name: Move created packages
         run: |
@@ -85,9 +75,7 @@ jobs:
       - name: Generate package index
         run: |
           cd output
-          if [ -f *.ipk ]; then
-            ${GITHUB_WORKSPACE}/helloworld/luci-app-ssr-plus/tools/po2lmo 2>/dev/null || true
-            
+          if ls *.ipk 1> /dev/null 2>&1; then
             # Generate Packages manifest
             cat > Packages << EOF
             Package: helloworld-feed
@@ -111,7 +99,6 @@ jobs:
             
             # Generate compressed index files
             gzip -c Packages > Packages.gz 2>/dev/null || true
-            xz -c Packages > Packages.xz 2>/dev/null || true
           fi
           ls -la
 
@@ -121,7 +108,6 @@ jobs:
           cat > BUILD-INFO << EOF
           Build Date: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
           Architecture: ${{ env.ARCH }}
-          Target: ${{ env.TARGET }}
           Source: ${{ env.REPO_URL }}
           GitHub Run ID: ${{ github.run_id }}
           GitHub Run Number: ${{ github.run_number }}
@@ -166,7 +152,7 @@ jobs:
           tag_name: helloworld-${{ env.ARCH }}-${{ github.run_number }}
           name: Helloworld ${{ env.ARCH }} Build #${{ github.run_number }}
           body: |
-            Automated build for ${{ env.ARCH }} (${{ env.TARGET }})
+            Automated build for ${{ env.ARCH }} (OpenWrt 24.10)
             
             - Build Date: ${{ github.event.head_commit.timestamp }}
             - Source: ${{ env.REPO_URL }}
