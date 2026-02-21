@@ -62,7 +62,6 @@ jobs:
         env:
           ARCH: ${{ env.ARCH }}-openwrt-24.10
           FEEDNAME: ${{ env.FEEDNAME }}
-          PACKAGES: ${{ env.PACKAGES }}
           NO_REFRESH_CHECK: true
           IGNORE_ERRORS: true
 
