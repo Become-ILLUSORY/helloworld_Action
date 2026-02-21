@@ -1,0 +1,186 @@
+name: Build Helloworld for aarch64_cortex-a53
+
+on:
+  push:
+    branches:
+      - master
+      - main
+  pull_request:
+    branches:
+      - master
+      - main
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch to build'
+        required: true
+        default: 'master'
+        type: string
+
+env:
+  REPO_URL: https://github.com/fw876/helloworld.git
+  ARCH: aarch64_cortex-a53
+  TARGET: mvebu-cortexa53
+  FEEDNAME: helloworld
+
+jobs:
+  build:
+    name: Build ${{ env.ARCH }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Free Disk Space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Clone helloworld repository
+        run: |
+          git clone --depth=1 ${{ env.REPO_URL }} helloworld
+          echo "Helloworld repository cloned successfully"
+          ls -la helloworld/
+
+      - name: Detect packages to build
+        run: |
+          cd helloworld
+          # Find all packages (directories containing Makefile)
+          PACKAGES=$(find . -name Makefile -not -path "./src/*" | \
+            xargs -I {} dirname {} | \
+            sed 's|^\./||' | \
+            grep -v "^\." | \
+            sort -u | \
+            tr '\n' ' ')
+          
+          echo "Detected packages: $PACKAGES"
+          echo "PACKAGES=$PACKAGES" >> $GITHUB_ENV
+
+      - name: Build packages
+        uses: immortalwrt/gh-action-sdk@v7
+        env:
+          ARCH: ${{ env.ARCH }}
+          FEEDNAME: ${{ env.FEEDNAME }}
+          V: s
+          target: ${{ env.TARGET }}
+          packages: ${{ env.PACKAGES }}
+        with:
+          entrypoint: /entrypoint.sh
+
+      - name: Move created packages
+        run: |
+          mkdir -p output
+          cp bin/packages/${{ env.ARCH }}/${{ env.FEEDNAME }}/*.ipk output/ 2>/dev/null || true
+          ls -la output/ || echo "No packages found"
+
+      - name: Generate package index
+        run: |
+          cd output
+          if [ -f *.ipk ]; then
+            ${GITHUB_WORKSPACE}/helloworld/luci-app-ssr-plus/tools/po2lmo 2>/dev/null || true
+            
+            # Generate Packages manifest
+            cat > Packages << EOF
+            Package: helloworld-feed
+            Version: $(date +%Y%m%d)
+            Depends: 
+            Architecture: ${{ env.ARCH }}
+            Maintainer: fw876
+            Section: net
+            Description: Helloworld feed for ${{ env.ARCH }}
+            EOF
+            
+            # Add package listings
+            for ipk in *.ipk; do
+              if [ -f "$ipk" ]; then
+                echo "" >> Packages
+                echo "Package file: $ipk" >> Packages
+                echo "Size: $(stat -c%s "$ipk" 2>/dev/null || stat -f%z "$ipk")" >> Packages
+                echo "SHA256sum: $(sha256sum "$ipk" | cut -d' ' -f1)" >> Packages
+              fi
+            done
+            
+            # Generate compressed index files
+            gzip -c Packages > Packages.gz 2>/dev/null || true
+            xz -c Packages > Packages.xz 2>/dev/null || true
+          fi
+          ls -la
+
+      - name: Create release info
+        run: |
+          cd output
+          cat > BUILD-INFO << EOF
+          Build Date: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
+          Architecture: ${{ env.ARCH }}
+          Target: ${{ env.TARGET }}
+          Source: ${{ env.REPO_URL }}
+          GitHub Run ID: ${{ github.run_id }}
+          GitHub Run Number: ${{ github.run_number }}
+          Commit SHA: ${{ github.sha }}
+          
+          Packages:
+          EOF
+          
+          for pkg in *.ipk; do
+            if [ -f "$pkg" ]; then
+              echo "  - $pkg ($(du -h "$pkg" | cut -f1))" >> BUILD-INFO
+            fi
+          done
+          
+          cat BUILD-INFO
+
+      - name: Upload packages artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: helloworld-${{ env.ARCH }}-${{ github.run_number }}
+          path: |
+            output/*.ipk
+            output/Packages
+            output/Packages.*
+            output/BUILD-INFO
+          if-no-files-found: warn
+
+      - name: Upload build logs
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: helloworld-${{ env.ARCH }}-${{ github.run_number }}-logs
+          path: |
+            logs/
+            output/BUILD-INFO
+          if-no-files-found: ignore
+
+      - name: Create Release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: helloworld-${{ env.ARCH }}-${{ github.run_number }}
+          name: Helloworld ${{ env.ARCH }} Build #${{ github.run_number }}
+          body: |
+            Automated build for ${{ env.ARCH }} (${{ env.TARGET }})
+            
+            - Build Date: ${{ github.event.head_commit.timestamp }}
+            - Source: ${{ env.REPO_URL }}
+            - Commit: ${{ github.sha }}
+            
+            ## Installation
+            
+            Add the following to your `/etc/opkg/customfeeds.conf`:
+            ```
+            src/gz helloworld https://github.com/${{ github.repository }}/releases/download/helloworld-${{ env.ARCH }}-${{ github.run_number }}
+            ```
+          files: |
+            output/*.ipk
+            output/Packages
+            output/Packages.*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
